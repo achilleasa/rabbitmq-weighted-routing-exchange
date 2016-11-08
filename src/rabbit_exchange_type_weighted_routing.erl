@@ -1,12 +1,14 @@
 -module(rabbit_exchange_type_weighted_routing).
 
--include_lib("amqp_client/include/amqp_client.hrl").
+-include_lib("rabbit_common/include/rabbit.hrl").
+-include("rabbit_weighted_routing.hrl").
 
 -behaviour(rabbit_exchange_type).
 -behaviour(gen_server).
 
 -export([start_link/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+-export([setup_schema/0, disable_plugin/0]).
 -export([info/1, info/2]).
 -export([
 	 add_binding/3,
@@ -28,20 +30,19 @@
 	 get_weights/1
 	]).
 
--define(SERVER, ?MODULE).
--define(EXCHANGE_DESCRIPTION, <<"weighted routing exchange">>).
--define(EXCHANGE_EXCHANGE_TYPE_PARAM, <<"x-weighted-routing">>).
+-define(EXCHANGE_NAME, <<"x-weighted-routing">>).
+-define(EXCHANGE_DESCR, <<"weighted routing exchange">>).
 -define(ROUTE_LABEL_HEADER, <<"x-route-label">>).
--define(TABLE_NAME, weighted_routing_exchange_weights).
 
 -rabbit_boot_step({?MODULE,
-		   [{description, ?EXCHANGE_DESCRIPTION},
-		    {mfa,         {rabbit_registry, register, [exchange, ?EXCHANGE_EXCHANGE_TYPE_PARAM, ?MODULE]}},
+		   [{description, ?EXCHANGE_DESCR},
+		    {mfa, {?MODULE, setup_schema, []}},
+		    {mfa,         {rabbit_registry, register, [exchange, ?EXCHANGE_NAME, ?MODULE]}},
+		    {cleanup, {?MODULE, disable_plugin, []}},
 		    {requires,    rabbit_registry},
-		    {enables,     kernel_ready}]}).
+		    {enables,  recovery}]}).
 
 -record(state, {}).
--record(routing_weights, {xchg_name, weights}).
 
 %---------------------------
 % rabbit_emulated_exchange_type behavior
@@ -53,7 +54,7 @@ info(_X, _) -> [].
 serialise_events() -> false.
 
 description() ->
-	[{name, ?EXCHANGE_EXCHANGE_TYPE_PARAM}, {description, ?EXCHANGE_DESCRIPTION}].
+	[{name, ?EXCHANGE_NAME}, {description, ?EXCHANGE_DESCR}].
 
 validate(X) ->
 	Exchange = emulated_exchange_type(X),
@@ -115,7 +116,7 @@ emulated_exchange_type(_Exchange=#exchange{ arguments=_Args }) ->
 % The function samples a uniform random number R and returns the first label that satisfies
 % predicate: R <= AW
 select_routing_label(XName) ->
-	Rec = mnesia:dirty_read({?TABLE_NAME, XName}),
+	Rec = mnesia:dirty_read({?WEIGHTS_TABLE_NAME, XName}),
 	case Rec of
 		[] ->
 			"";
@@ -148,10 +149,10 @@ set_weights(ExchangeName, Input) ->
 	% Weights must add to 1.0
 	case WeightSum of
 		S when S =:= 1.0 ->
-			T = fun() -> mnesia:write(?TABLE_NAME, #routing_weights{xchg_name = XName, weights = lists:zip(Labels, CumulativeWeights)}, write) end,
+			T = fun() -> mnesia:write(?WEIGHTS_TABLE_NAME, #routing_weights{xchg_name = XName, weights = lists:zip(Labels, CumulativeWeights)}, write) end,
 			case mnesia:transaction(T) of
 				{aborted, Reason} -> {error, Reason};
-				_ -> {ok}
+				_ -> {ok, get_weights(ExchangeName)}
 			end;
 		_ -> {error, "route weights do not sum to 1.0"}
 	end.
@@ -160,17 +161,17 @@ set_weights(ExchangeName, Input) ->
 get_weights() ->
 	Iterator =  fun(#routing_weights{xchg_name = Name, weights = CW},_)-> {Name, unpack_weights(CW)} end,
 	case mnesia:is_transaction() of
-		true -> mnesia:foldl(Iterator,[],?TABLE_NAME);
+		true -> mnesia:foldl(Iterator,[],?WEIGHTS_TABLE_NAME);
 		false ->
 			Exec = fun({Fun,Tab}) -> mnesia:foldl(Fun, [],Tab) end,
-			mnesia:activity(transaction,Exec,[{Iterator,?TABLE_NAME}],mnesia_frag)
+			mnesia:activity(transaction,Exec,[{Iterator,?WEIGHTS_TABLE_NAME}],mnesia_frag)
 	end.
 
 
 % Get back a the weights for an exchange given its name.
 get_weights(ExchangeName) ->
 	XName = ensure_bitstring(ExchangeName),
-	T = fun() -> mnesia:read({?TABLE_NAME, XName}) end,
+	T = fun() -> mnesia:read({?WEIGHTS_TABLE_NAME, XName}) end,
 	case mnesia:transaction(T) of
 		{atomic, []} -> {error, "no routing weights specified"};
 		{atomic, [#routing_weights{xchg_name = _XName, weights = CumulativeWeights}]} -> unpack_weights(CumulativeWeights)
@@ -190,25 +191,30 @@ ensure_bitstring(Str) ->
 	end.
 
 %---------------------------
+% Plugin setup and cleanup
+% --------------------------
+
+setup_schema() ->
+	mnesia:create_table(?WEIGHTS_TABLE_NAME,
+			    [{record_name, routing_weights},
+			     {attributes, record_info(fields, routing_weights)}]),
+	mnesia:add_table_copy(?WEIGHTS_TABLE_NAME, node(), disc_copies),
+	mnesia:wait_for_tables([?WEIGHTS_TABLE_NAME], 30000),
+	ok.
+
+disable_plugin() ->
+	rabbit_registry:unregister(exchange, ?EXCHANGE_NAME),
+	mnesia:delete_table(?WEIGHTS_TABLE_NAME),
+	ok.
+
+%---------------------------
 % Gen Server Implementation
 % --------------------------
 
 start_link() ->
-	gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+	gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-init([]) ->
-	{case mnesia:create_table(?TABLE_NAME, [{record_name, routing_weights},
-						{attributes, record_info(fields, routing_weights)}]) of
-		 {atomic, ok}                   ->
-			 rabbit_log:info("Created mnesia table~n", []),
-			 ok;
-		 {aborted, {already_exists, _}} ->
-			 rabbit_log:info("Mnesia table already_exists~n", []),
-			 ok;
-		 {aborted, Error}               ->
-			 rabbit_log:error("Failed to create a tracked connection table: ~p", [Error]),
-			 ok
-	 end, #state{}}.
+init([]) -> {ok, #state{}}.
 
 handle_call(_Msg, _From, State) ->
 	{reply, unknown_command, State}.
@@ -224,4 +230,3 @@ terminate(_, _) -> ok.
 code_change(_OldVsn, State, _Extra) ->
 	{ok, State}.
 
-%---------------------------

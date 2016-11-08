@@ -1,8 +1,0 @@
-{application, rabbit_exchange_type_weighted_routing,
- [{description, "Weighted routing exchange"},
-  {vsn, ""},
-  {modules, []},
-  {registered, []},
-  {mod, {weighted_routing_app, []}},
-  {env, []},
-  {applications, [kernel, stdlib, rabbit_common, rabbit, amqp_client]}]}.

@@ -1,7 +1,7 @@
-PROJECT=rabbit_exchange_type_weighted_routing
+PROJECT=rabbitmq_weighted_routing
 
-DEPS = rabbit_common rabbit amqp_client
-TEST_DEPS = rabbitmq_ct_helpers
+DEPS = rabbit_common rabbit
+TEST_DEPS = rabbitmq_ct_helpers amqp_client
 
 DEP_PLUGINS = rabbit_common/mk/rabbitmq-plugin.mk
 

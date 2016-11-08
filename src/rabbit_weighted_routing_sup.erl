@@ -1,10 +1,10 @@
--module(weighted_routing_sup).
+-module(rabbit_weighted_routing_sup).
+
+-define(IMPL, rabbit_exchange_type_weighted_routing).
 
 -behaviour(supervisor).
 
 -export([start_link/0, init/1]).
-
--define(IMPL, rabbit_exchange_type_weighted_routing).
 
 start_link() ->
 	supervisor:start_link({local, ?MODULE}, ?MODULE, _Arg = []).

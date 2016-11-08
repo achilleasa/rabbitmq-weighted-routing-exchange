@@ -1,0 +1,11 @@
+{application, rabbitmq_weighted_routing,
+ [{description, "Weighted routing exchange"},
+  {vsn, "0.0.1"},
+  {modules, [
+  	rabbit_weighted_routing_app,
+	rabbit_weighted_routing_sup,
+	rabbit_exchange_type_weighted_routing
+  ]},
+  {registered, []},
+  {broker_version_requirements, ["3.6.0", "3.7.0"]},
+  {applications, [kernel, stdlib, rabbit_common, rabbit, mnesia]}]}.
