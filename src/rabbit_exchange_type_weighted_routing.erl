@@ -152,19 +152,19 @@ set_weights(ExchangeName, Input) ->
 			T = fun() -> mnesia:write(?WEIGHTS_TABLE_NAME, #routing_weights{xchg_name = XName, weights = lists:zip(Labels, CumulativeWeights)}, write) end,
 			case mnesia:transaction(T) of
 				{aborted, Reason} -> {error, Reason};
-				_ -> {ok, get_weights(ExchangeName)}
+				_ -> get_weights(ExchangeName)
 			end;
 		_ -> {error, "route weights do not sum to 1.0"}
 	end.
 
 % Get back a list of {Exchange name, Weights} tuples for all known weighted_routing exchanges.
 get_weights() ->
-	Iterator =  fun(#routing_weights{xchg_name = Name, weights = CW},_)-> {Name, unpack_weights(CW)} end,
-	case mnesia:is_transaction() of
-		true -> mnesia:foldl(Iterator,[],?WEIGHTS_TABLE_NAME);
-		false ->
-			Exec = fun({Fun,Tab}) -> mnesia:foldl(Fun, [],Tab) end,
-			mnesia:activity(transaction,Exec,[{Iterator,?WEIGHTS_TABLE_NAME}],mnesia_frag)
+	Iterator =  fun(#routing_weights{xchg_name = Name, weights = CW},Set)-> lists:append(Set, [{Name, unpack_weights(CW)}]) end,
+	T = fun() -> mnesia:foldl(Iterator, [], ?WEIGHTS_TABLE_NAME) end,
+	case mnesia:transaction(T) of
+		{aborted, Reason} -> {error, Reason};
+		{atomic, []} -> {ok, []};
+		{atomic, List} -> {ok, List}
 	end.
 
 
@@ -173,8 +173,9 @@ get_weights(ExchangeName) ->
 	XName = ensure_bitstring(ExchangeName),
 	T = fun() -> mnesia:read({?WEIGHTS_TABLE_NAME, XName}) end,
 	case mnesia:transaction(T) of
+		{aborted, Reason} -> {error, Reason};
 		{atomic, []} -> {error, "no routing weights specified"};
-		{atomic, [#routing_weights{xchg_name = _XName, weights = CumulativeWeights}]} -> unpack_weights(CumulativeWeights)
+		{atomic, [#routing_weights{xchg_name = _XName, weights = CumulativeWeights}]} -> {ok, unpack_weights(CumulativeWeights)}
 	end.
 
 % Apply a continuous subtraction function to a list of weights packed by set_weights/1
