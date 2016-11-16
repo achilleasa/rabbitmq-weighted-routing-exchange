@@ -159,7 +159,7 @@ set_weights(ExchangeName, Input) ->
 
 % Get back a list of {Exchange name, Weights} tuples for all known weighted_routing exchanges.
 get_weights() ->
-	Iterator =  fun(#routing_weights{xchg_name = Name, weights = CW},Set)-> lists:append(Set, [{Name, unpack_weights(CW)}]) end,
+	Iterator =  fun(#routing_weights{xchg_name = Name, weights = CW},Set)-> lists:append(Set, [{binary_to_list(Name), unpack_weights(CW)}]) end,
 	T = fun() -> mnesia:foldl(Iterator, [], ?WEIGHTS_TABLE_NAME) end,
 	case mnesia:transaction(T) of
 		{aborted, Reason} -> {error, Reason};
